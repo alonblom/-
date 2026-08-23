@@ -40,11 +40,14 @@ export async function subscribe(cb) {
   });
 }
 
-// Save the whole state object to the cloud (merge). Fire-and-forget with error logging.
+// Save the whole state object to the cloud. The payload always carries every
+// state map in full, and it is written WITHOUT merge so that removals (e.g. of
+// legacy keys cleaned up by a shape upgrade) actually propagate instead of
+// being deep-merged back in.
 export async function save(data) {
   try {
     const { fs, ref } = await _init();
-    await fs.setDoc(ref, { ...data, updatedAt: Date.now() }, { merge: true });
+    await fs.setDoc(ref, { ...data, updatedAt: Date.now() });
     return true;
   } catch (err) {
     console.warn("[mf-firebase] save error:", err && err.message);
