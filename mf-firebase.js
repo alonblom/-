@@ -1,6 +1,5 @@
-// MuniForce ⇄ Firestore live-sync helper.
+// MuniForce ⇄ Firestore live-sync + Google sign-in gate.
 // Loads the Firebase modular SDK from the gstatic CDN (no build step, works from a static file).
-// Exposes a tiny API the dashboard logic uses: subscribe(cb) and save(data).
 
 const firebaseConfig = {
   apiKey: "AIzaSyCMjD6K5f_3ZYx-YPMFXUNFGV5cQCesobA",
@@ -13,30 +12,65 @@ const firebaseConfig = {
 
 const DOC_PATH = ["state", "main"];
 
-let _dbP = null;
-let _api = null;
+let _p = null;
 
 async function _init() {
-  if (_dbP) return _dbP;
-  _dbP = (async () => {
+  if (_p) return _p;
+  _p = (async () => {
     const appMod = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
     const fs = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js");
+    const au = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js");
     const app = appMod.initializeApp(firebaseConfig);
     const db = fs.getFirestore(app);
-    _api = { fs, db, ref: fs.doc(db, DOC_PATH[0], DOC_PATH[1]) };
-    return _api;
+    const auth = au.getAuth(app);
+    return { fs, au, db, auth, ref: fs.doc(db, DOC_PATH[0], DOC_PATH[1]) };
   })();
-  return _dbP;
+  return _p;
 }
 
-// Subscribe to live updates. cb receives the stored {task,durations,starts} object
-// (or null if the doc doesn't exist yet). Returns an unsubscribe function (async).
-export async function subscribe(cb) {
+// ---- auth ----
+
+// Watch sign-in state. cb receives {email, name, photo} or null when signed out.
+export async function watchUser(cb) {
+  const { au, auth } = await _init();
+  return au.onAuthStateChanged(auth, u => {
+    cb(u ? { email: u.email || "", name: u.displayName || "", photo: u.photoURL || "" } : null);
+  });
+}
+
+export async function signIn() {
+  const { au, auth } = await _init();
+  const provider = new au.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  try {
+    await au.signInWithPopup(auth, provider);
+    return { ok: true };
+  } catch (err) {
+    const code = (err && err.code) || "";
+    // Popup blocked or closed by the browser — fall back to a full-page redirect.
+    if (code === "auth/popup-blocked" || code === "auth/operation-not-supported-in-this-environment") {
+      try { await au.signInWithRedirect(auth, provider); return { ok: true }; } catch (e2) { return { ok: false, code: e2 && e2.code }; }
+    }
+    return { ok: false, code };
+  }
+}
+
+export async function signOutUser() {
+  const { au, auth } = await _init();
+  try { await au.signOut(auth); } catch (e) {}
+}
+
+// ---- data ----
+
+// Subscribe to live updates. cb receives the stored state object (or null).
+// Returns an unsubscribe function.
+export async function subscribe(cb, onError) {
   const { fs, ref } = await _init();
   return fs.onSnapshot(ref, (snap) => {
     cb(snap.exists() ? snap.data() : null);
   }, (err) => {
     console.warn("[mf-firebase] snapshot error:", err && err.message);
+    if (onError) onError(err);
   });
 }
 
